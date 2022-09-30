@@ -1,8 +1,8 @@
 package org.example.kafkalatencytest;
 
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.CommonClientConfigs;
-import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -17,6 +17,9 @@ import org.apache.kafka.common.serialization.LongDeserializer;
 import org.apache.kafka.common.serialization.LongSerializer;
 import org.junit.Test;
 
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
@@ -57,18 +60,22 @@ public class LatencyTest {
 
     public static final String TOPIC = UUID.randomUUID().toString();
     public static final int NUM_RECORDS = 10000;
-    private static final long PRODUCER_SLEEP = 1l;
+    private static final long PRODUCER_SLEEP = 1L;
     private static final long CONSUMER_STARTUP_SLEEP = 1000L;
     private static final int NUM_PARTITIONS = 12;
 
-    private Properties producerProperties() {
+    @SneakyThrows
+    public Properties producerProperties() {
+        String propFileName = "producer.properties";
         Properties properties = new Properties();
-        properties.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
-        properties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, IntegerSerializer.class);
-        properties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, LongSerializer.class);
-        properties.put(ProducerConfig.LINGER_MS_CONFIG, 0);
-        properties.put(ProducerConfig.BATCH_SIZE_CONFIG, 100000);
-        // properties.put(ProducerConfig.COMPRESSION_TYPE_CONFIG, "snappy");
+
+        try (InputStream inputStream = getClass().getClassLoader().getResourceAsStream(propFileName)){
+            if (inputStream != null) {
+                properties.load(inputStream);
+            } else {
+                throw new FileNotFoundException("property file '" + propFileName + "' not found in the classpath");
+            }
+        }
         return properties;
     }
 
@@ -82,9 +89,9 @@ public class LatencyTest {
         Thread.sleep(CONSUMER_STARTUP_SLEEP); // give the consumer some time to start.
         KafkaProducer<Integer, Long> kafkaProducer =
                 new KafkaProducer<>(producerProperties());
-        for (int i = 0; i < NUM_RECORDS + 100; i++) {
+        for (long i = 0; i < NUM_RECORDS + 100; i++) {
             Thread.sleep(PRODUCER_SLEEP);
-            kafkaProducer.send(new ProducerRecord<>(TOPIC, i, System.currentTimeMillis()));
+            kafkaProducer.send(new ProducerRecord<>(TOPIC, (int) i, System.currentTimeMillis()));
         }
         consumerThread.join();
     }
@@ -93,28 +100,37 @@ public class LatencyTest {
 @Slf4j
 class TestConsumer implements Runnable {
 
+    @SneakyThrows
     private Properties consumerProperties() {
+        String propFileName = "consumer.properties";
         Properties properties = new Properties();
-        properties.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
-        properties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, IntegerDeserializer.class);
-        properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, LongDeserializer.class);
-        properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        properties.put(ConsumerConfig.GROUP_ID_CONFIG, "test-consumer");
-        log.info(properties.toString());
+
+        try (InputStream inputStream = getClass().getClassLoader().getResourceAsStream(propFileName)){
+            if (inputStream != null) {
+                properties.load(inputStream);
+            } else {
+                throw new FileNotFoundException("property file '" + propFileName + "' not found in the classpath");
+            }
+        }
         return properties;
     }
 
+    @SneakyThrows
     @Override
     public void run() {
         KafkaConsumer<Integer, Long> kafkaConsumer =
                 new KafkaConsumer<>(consumerProperties());
-        kafkaConsumer.subscribe(Collections.singleton(LatencyTest.TOPIC));
+        kafkaConsumer.subscribe(Set.of(LatencyTest.TOPIC));
         AtomicInteger received = new AtomicInteger();
         AtomicLong totalLatency = new AtomicLong();
         while (received.get() < LatencyTest.NUM_RECORDS) {
             ConsumerRecords<Integer, Long> result = kafkaConsumer.poll(Duration.ofHours(1));
             result.iterator().forEachRemaining(
                     record -> {
+                        //log.info("System.currentTimeMillis() - record.value(): {} - {} = {}",
+                        //        System.currentTimeMillis(),
+                        //        record.value(),
+                        //        System.currentTimeMillis() - record.value());
                         received.getAndIncrement();
                         totalLatency.getAndAdd(System.currentTimeMillis() - record.value());
                     }
