@@ -27,42 +27,35 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * This test helps to measure average end-to-end latency of a messages produced to Kafka and consumed back from a
- * different thread. Each message is given a timestamp by the producer. Latency is computed by the consumer by
+ * This test helps to measure average end-to-end latency of a messages sent from one Cluster via Cluster Linking
+ * to another Kafka Cluster.
+ *
+ * Producer --> Cluster1 ---cluster-link---> Cluster2 --> Consumer
+ *
+ * Each message is given a timestamp by the producer. Latency is computed by the consumer by
  * subtracting the producer timestamp from the current time.
  *
  * Here is some sample output:
  *
- * [Thread-0] INFO org.example.kafkalatencytest.TestConsumer - finished: total latency 6971
- * [Thread-0] INFO org.example.kafkalatencytest.TestConsumer - average latency: 0.6971
+ [Thread-0] INFO org.example.kafkalatencytest.TestConsumer - finished: total latency 2538405
+ [Thread-0] INFO org.example.kafkalatencytest.TestConsumer - average latency: 253.8405
  *
- * With a local installation of Confluent Kafka 5.4, a number of 10000 messages, sleep time of 1ms between
- * messages, consumer start up sleep time fo 1000ms, batch size of 1000, the average latency of a round trip is
- * clearly under a millisecond on modern hardware.
+ * With a local installation of Confluent Kafka 7.2, a number of 10000 messages, sleep time of 1ms between
+ * messages, consumer start up sleep time of 1000ms, the average latency of a round trip is
+ * at about 255ms. This can probably be tuned to be much slower with the appropriate c luster linking configuration
+ * parameters.
  *
- * Key results:
- * * producer batch size does not have a significant impact on latency
- * * best latency is achieved with linger.ms = 0
- * * When sending at very high throughput, latency suffers
- * * Testing with a small amount of messages results in higher average latency
- * * increasing linger.ms with a high batch size significantly increases latency
- * * high linger.ms with small batch size has only little more latency than the default settings
- * * zstd compression significantly increases latency (factor 10) when used with timestamps as message payloads
- *   and a small batch size (100).
- *   With a larger batch size (10000, 1000000) latency only slightly increases.
- *   snappy compression has lower impact on latency with this type of message
- * * latency slightly increases when increasing the number of partitions on a single node kafka cluster.
- *
+ * When consuming the same message from the first cluster, latency is at about 1 ms. Hence, cluster linking introduces
+ * an additional latency of about 250 ms, when no further tuning has been done.
  */
 
 @Slf4j
 public class LatencyTest {
 
-    public static final String TOPIC = UUID.randomUUID().toString();
+    public static final String TOPIC = "demo";
     public static final int NUM_RECORDS = 10000;
     private static final long PRODUCER_SLEEP = 1L;
     private static final long CONSUMER_STARTUP_SLEEP = 1000L;
-    private static final int NUM_PARTITIONS = 12;
 
     @SneakyThrows
     public Properties producerProperties() {
@@ -79,12 +72,34 @@ public class LatencyTest {
         return properties;
     }
 
+    /**
+     * Before the test, we need to set up a fresh topic in the source cluster, and a fresh mirror of the topic
+     * in the destination cluster:
+     *
+     * kafka-topics --create --topic demo --bootstrap-server localhost:9092
+     * kafka-cluster-links --bootstrap-server localhost:9093 \
+     *   --create --link demo-link --config bootstrap.servers=localhost:9092
+     * kafka-mirrors --create \
+     *   --mirror-topic demo \
+     *   --link demo-link \
+     *   --bootstrap-server localhost:9093
+     *
+     * Delete the topics after the test:
+     *
+     * Cleanup:
+     * kafka-topics --delete \
+     *  --topic demo \
+     *  --bootstrap-server localhost:9092
+     *
+     * kafka-topics --delete \
+     *  --topic demo \
+     *  --bootstrap-server localhost:9093
+     **/
+
     @Test
-    public void test() throws InterruptedException, ExecutionException {
+    public void test() throws InterruptedException {
         log.info("Testing on topic {}", TOPIC);
         Thread consumerThread = new Thread(new TestConsumer());
-        AdminClient adminClient = AdminClient.create(producerProperties());
-        adminClient.createTopics(Collections.singleton(new NewTopic(TOPIC, NUM_PARTITIONS, (short) 1))).all().get();
         consumerThread.start();
         Thread.sleep(CONSUMER_STARTUP_SLEEP); // give the consumer some time to start.
         KafkaProducer<Integer, Long> kafkaProducer =
@@ -93,6 +108,7 @@ public class LatencyTest {
             Thread.sleep(PRODUCER_SLEEP);
             kafkaProducer.send(new ProducerRecord<>(TOPIC, (int) i, System.currentTimeMillis()));
         }
+        kafkaProducer.close();
         consumerThread.join();
     }
 }
@@ -138,5 +154,6 @@ class TestConsumer implements Runnable {
         }
         log.info("finished: total latency {}", totalLatency.get());
         log.info("average latency: {}", totalLatency.get() / (LatencyTest.NUM_RECORDS + 0.0));
+        kafkaConsumer.close();
     }
 }
