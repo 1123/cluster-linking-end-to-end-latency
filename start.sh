@@ -3,6 +3,9 @@
 rm -rf logs
 mkdir -p logs
 
+rm -r /tmp/zookeeper-1
+rm -r /tmp/zookeeper-2
+
 export JAVA_HOME=$(/usr/libexec/java_home -v11)
 
 set -e -u
@@ -28,8 +31,8 @@ kafka-console-producer \
 kafka-producer-perf-test \
   --producer-props bootstrap.servers=localhost:9092 \
   --topic demo \
-  --throughput 100 \
-  --record-size 1000 \
+  --throughput 1 \
+  --record-size 10 \
   --num-records 1000
 
 kafka-console-consumer --topic demo --from-beginning --bootstrap-server localhost:9092
